@@ -4,6 +4,7 @@ import time
 import socket
 import json
 import psutil
+import logging
 import aiosqlite
 import subprocess
 from datetime import datetime, timedelta
@@ -29,6 +30,11 @@ ALERT_COOLDOWN_MIN = int(os.getenv("ALERT_COOLDOWN_MIN", "10"))
 WG_CONTAINER = os.getenv("WG_CONTAINER", "wg-easy")
 
 LAST_ALERT_TS = 0.0
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 
 
 async def init_db():
@@ -308,9 +314,16 @@ async def scheduler_job():
         pass
 
 
-async def main():
+async def on_startup(application: Application):
+    # Ensure DB exists before starting jobs
     await init_db()
+    scheduler = AsyncIOScheduler(timezone=os.getenv("TZ", "UTC"))
+    scheduler.add_job(scheduler_job, IntervalTrigger(seconds=METRICS_INTERVAL_SEC))
+    scheduler.start()
+    application.bot_data["scheduler"] = scheduler
 
+
+def main():
     global app
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
@@ -321,22 +334,15 @@ async def main():
     app.add_handler(CommandHandler("graph", cmd_graph))
     app.add_handler(CommandHandler("speedtest", cmd_speedtest))
 
-    scheduler = AsyncIOScheduler(timezone=os.getenv("TZ", "UTC"))
-    scheduler.add_job(scheduler_job, IntervalTrigger(seconds=METRICS_INTERVAL_SEC))
-    scheduler.start()
+    app.post_init(on_startup)
 
-    await app.initialize()
-    await app.start()
-    try:
-        await asyncio.Event().wait()
-    finally:
-        await app.stop()
-        await app.shutdown()
+    # Run polling (blocks until termination)
+    app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
     if not TELEGRAM_BOT_TOKEN:
         raise SystemExit("TELEGRAM_BOT_TOKEN is required")
-    asyncio.run(main())
+    main()
 
 
