@@ -229,9 +229,7 @@ async def cmd_peers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     escaped = out.replace("-", "\\-").replace(".", "\\.").replace("_", "\\_").replace("*", "\\*")\
                  .replace("(", "\\(").replace(")", "\\)").replace("[", "\\[").replace("]", "\\]")\
                  .replace("#", "\\#").replace("+", "\\+").replace("=", "\\=")
-    await update.message.reply_text(f"```
-{escaped}
-```", parse_mode="MarkdownV2")
+    await update.message.reply_text("```\n" + escaped + "\n```", parse_mode="MarkdownV2")
 
 
 @guard
