@@ -24,7 +24,6 @@ if ! command -v docker >/dev/null 2>&1; then
   yellow "Installing Docker..."
   sudo install -m 0755 -d /etc/apt/keyrings
   curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-  # Write correct Docker APT repository entry
   sudo tee /etc/apt/sources.list.d/docker.list > /dev/null <<EOF
 deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable
 EOF
@@ -50,12 +49,14 @@ fi
 
 mkdir -p data/wg-easy data/bot
 
-# Generate bcrypt hash for wg-easy if needed
+# Try to generate bcrypt hash for wg-easy if possible; fall back to PASSWORD env
 if [[ -z "${WG_EASY_PASSWORD_HASH:-}" && -n "${WG_EASY_PASSWORD:-}" ]]; then
-  yellow "Generating PASSWORD_HASH for wg-easy..."
-  HASH=$(docker run --rm weejewel/wg-easy:latest wgpw "$WG_EASY_PASSWORD" | tr -d '\r')
-  if [[ -n "$HASH" ]]; then
-    # Replace or append WG_EASY_PASSWORD_HASH in .env
+  yellow "Attempting to generate PASSWORD_HASH for wg-easy (optional)..."
+  set +e
+  HASH=$(docker run --rm weejewel/wg-easy:latest node -e 'const bcrypt=require("bcryptjs");console.log(bcrypt.hashSync(process.argv[1],10));' "$WG_EASY_PASSWORD" 2>/dev/null)
+  RC=$?
+  set -e
+  if [[ $RC -eq 0 && -n "$HASH" ]]; then
     if grep -q '^WG_EASY_PASSWORD_HASH=' .env; then
       sed -i "s|^WG_EASY_PASSWORD_HASH=.*$|WG_EASY_PASSWORD_HASH=$HASH|" .env
     else
@@ -63,7 +64,7 @@ if [[ -z "${WG_EASY_PASSWORD_HASH:-}" && -n "${WG_EASY_PASSWORD:-}" ]]; then
     fi
     green "PASSWORD_HASH generated."
   else
-    red "Failed to generate PASSWORD_HASH."
+    yellow "Could not generate bcrypt hash; will use plain PASSWORD env."
   fi
 fi
 
