@@ -4,8 +4,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 RUN apt-get update -y && apt-get install -y --no-install-recommends \
+    ca-certificates tzdata \
     iproute2 iputils-ping net-tools procps curl \
-    gnuplot docker.io \
+    gnuplot docker.io fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

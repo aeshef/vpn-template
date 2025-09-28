@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+chmod +x "$0" >/dev/null 2>&1 || true
 
 ROOT_DIR=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT_DIR"

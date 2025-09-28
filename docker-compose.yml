@@ -7,6 +7,7 @@ services:
     environment:
       - WG_HOST=${WG_HOST}
       - WG_PORT=${WG_PORT}
+      - PASSWORD=${WG_EASY_PASSWORD}
       - PASSWORD_HASH=${WG_EASY_PASSWORD_HASH}
       - WG_DEVICE=${WG_DEVICE}
       - WG_ALLOWED_IPS=0.0.0.0/0,::/0
