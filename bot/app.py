@@ -325,7 +325,13 @@ async def on_startup(application: Application):
 
 def main():
     global app
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    app = (
+        Application
+        .builder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .post_init(on_startup)
+        .build()
+    )
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
@@ -333,8 +339,6 @@ def main():
     app.add_handler(CommandHandler("peers", cmd_peers))
     app.add_handler(CommandHandler("graph", cmd_graph))
     app.add_handler(CommandHandler("speedtest", cmd_speedtest))
-
-    app.post_init(on_startup)
 
     # Run polling (blocks until termination)
     app.run_polling(drop_pending_updates=True)
