@@ -12,8 +12,8 @@ from datetime import datetime, timedelta
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
-from telegram import Update, InputFile
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram import Update, InputFile, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
 
 
 DATA_DIR = "/app/data"
@@ -184,12 +184,11 @@ def guard(func):
 
 @guard
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "/status — текущие метрики\n"
-        "/peers — активные VPN подключения\n"
-        "/graph [часы] — график нагрузки (по умолчанию 3)\n"
-        "/speedtest — тест скорости\n"
-    )
+    kb = [
+        [InlineKeyboardButton("📊 Статус", callback_data="status"), InlineKeyboardButton("👥 Пиры", callback_data="peers")],
+        [InlineKeyboardButton("📈 График", callback_data="graph_3"), InlineKeyboardButton("⚡ Speedtest", callback_data="speedtest")],
+    ]
+    await update.message.reply_text("Выберите действие:", reply_markup=InlineKeyboardMarkup(kb))
 
 
 @guard
@@ -231,11 +230,7 @@ async def cmd_peers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if code != 0 or not out.strip():
         await update.message.reply_text(("Failed to fetch peers: " + (err or out))[:1000])
         return
-    # Escape MarkdownV2 special characters
-    escaped = out.replace("-", "\\-").replace(".", "\\.").replace("_", "\\_").replace("*", "\\*")\
-                 .replace("(", "\\(").replace(")", "\\)").replace("[", "\\[").replace("]", "\\]")\
-                 .replace("#", "\\#").replace("+", "\\+").replace("=", "\\=")
-    await update.message.reply_text("```\n" + escaped + "\n```", parse_mode="MarkdownV2")
+    await update.message.reply_text("<pre>" + out + "</pre>", parse_mode="HTML")
 
 
 @guard
@@ -302,9 +297,44 @@ async def cmd_speedtest(update: Update, context: ContextTypes.DEFAULT_TYPE):
         args.extend(["--server", server_id])
     code, out, err = run_host_cmd(args, timeout=60)
     if code != 0:
-        await update.message.reply_text(f"speedtest failed: {err or out}"[:1000])
+        await update.message.reply_text(f"⚠️ speedtest failed: {(err or out)[:900]}")
         return
-    await update.message.reply_text(out[:3500])
+    # Parse simple output
+    dl = up = ping = None
+    for line in out.splitlines():
+        if line.startswith("Download"):
+            try:
+                dl = float(line.split(":")[1].strip().split()[0])
+            except Exception:
+                pass
+        if line.startswith("Upload"):
+            try:
+                up = float(line.split(":")[1].strip().split()[0])
+            except Exception:
+                pass
+        if line.startswith("Ping"):
+            try:
+                ping = float(line.split(":")[1].strip().split()[0])
+            except Exception:
+                pass
+    now = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
+    msg = ["🌐 Результаты теста скорости:\n"]
+    if dl is not None:
+        msg.append(f"📥 Download: {dl:.2f} Mbps")
+    if up is not None:
+        msg.append(f"📤 Upload: {up:.2f} Mbps")
+    if ping is not None:
+        msg.append(f"⏱️ Ping: {ping:.1f} ms")
+    if dl and dl >= 50:
+        msg.append("\n✅ Отличная скорость загрузки!")
+    elif dl and dl < 10:
+        msg.append("\n⚠️ Низкая скорость загрузки!")
+    if up and up >= 20:
+        msg.append("✅ Отличная скорость отдачи!")
+    elif up and up < 5:
+        msg.append("⚠️ Низкая скорость отдачи!")
+    msg.append(f"\nВремя теста: {now}")
+    await update.message.reply_text("\n".join(msg))
 
 
 async def scheduler_job():
@@ -339,6 +369,21 @@ def main():
     app.add_handler(CommandHandler("peers", cmd_peers))
     app.add_handler(CommandHandler("graph", cmd_graph))
     app.add_handler(CommandHandler("speedtest", cmd_speedtest))
+    app.add_handler(CallbackQueryHandler(handle_buttons))
+
+async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    data = q.data
+    if data == "status":
+        return await cmd_status(update, context)
+    if data == "peers":
+        return await cmd_peers(update, context)
+    if data.startswith("graph_"):
+        context.args = [data.split("_", 1)[1]]
+        return await cmd_graph(update, context)
+    if data == "speedtest":
+        return await cmd_speedtest(update, context)
 
     # Run polling (blocks until termination)
     app.run_polling(drop_pending_updates=True)
