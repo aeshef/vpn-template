@@ -16,7 +16,7 @@ services:
     volumes:
       - ./data/wg-easy:/etc/wireguard
     ports:
-      - "51820:51820/udp"
+      - "${WG_PORT}:${WG_PORT}/udp"
       - "51821:51821/tcp"
     cap_add:
       - NET_ADMIN
