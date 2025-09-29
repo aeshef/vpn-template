@@ -44,6 +44,21 @@ services:
       - wg-easy
     restart: unless-stopped
 
+  xray:
+    image: teddysun/xray:latest
+    container_name: xray
+    ports:
+      - "${XRAY_PORT}:443/tcp"
+      - "${XRAY_PORT}:443/udp"
+    volumes:
+      - ./data/xray:/etc/xray
+    environment:
+      - TZ=${TZ}
+    depends_on:
+      - wg-easy
+    restart: unless-stopped
+    # Will be enabled only if XRAY_ENABLED=true via setup script that drops config
+
 volumes:
   # Named volumes not required; using bind mounts to keep data in repo folder
   # defined for clarity if later needed

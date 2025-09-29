@@ -43,11 +43,15 @@ yellow "Configuring UFW..."
 sudo ufw allow 22/tcp || true
 sudo ufw allow 51821/tcp || true
 sudo ufw allow 51820/udp || true
+if [[ "${XRAY_ENABLED:-false}" == "true" ]]; then
+  sudo ufw allow ${XRAY_PORT:-443}/tcp || true
+  sudo ufw allow ${XRAY_PORT:-443}/udp || true
+fi
 if [[ "$(sudo ufw status | head -n1)" == "Status: inactive" ]]; then
   echo "y" | sudo ufw enable || true
 fi
 
-mkdir -p data/wg-easy data/bot
+mkdir -p data/wg-easy data/bot data/xray
 
 # Try to generate bcrypt hash for wg-easy if possible; fall back to PASSWORD env
 if [[ -z "${WG_EASY_PASSWORD_HASH:-}" && -n "${WG_EASY_PASSWORD:-}" ]]; then
@@ -71,6 +75,67 @@ fi
 yellow "Starting services with Docker Compose..."
 docker compose pull | cat || true
 docker compose up -d | cat
+
+# Configure Xray (Reality) if enabled
+if [[ "${XRAY_ENABLED:-false}" == "true" ]]; then
+  yellow "Configuring Xray (Reality)..."
+  # Generate keys if missing
+  if [[ -z "${REALITY_PRIVATE_KEY:-}" || -z "${REALITY_PUBLIC_KEY:-}" ]]; then
+    KEYS=$(docker run --rm teddysun/xray:latest xray x25519 | tr -d '\r')
+    PRIV=$(echo "$KEYS" | awk '/Private key/{print $3}')
+    PUB=$(echo "$KEYS" | awk '/Public key/{print $3}')
+    if [[ -n "$PRIV" && -n "$PUB" ]]; then
+      grep -q '^REALITY_PRIVATE_KEY=' .env && sed -i "s|^REALITY_PRIVATE_KEY=.*$|REALITY_PRIVATE_KEY=$PRIV|" .env || echo "REALITY_PRIVATE_KEY=$PRIV" >> .env
+      grep -q '^REALITY_PUBLIC_KEY=' .env && sed -i "s|^REALITY_PUBLIC_KEY=.*$|REALITY_PUBLIC_KEY=$PUB|" .env || echo "REALITY_PUBLIC_KEY=$PUB" >> .env
+      export REALITY_PRIVATE_KEY=$PRIV REALITY_PUBLIC_KEY=$PUB
+    fi
+  fi
+  if [[ -z "${REALITY_SHORT_ID:-}" ]]; then
+    SID=$(openssl rand -hex 4)
+    grep -q '^REALITY_SHORT_ID=' .env && sed -i "s|^REALITY_SHORT_ID=.*$|REALITY_SHORT_ID=$SID|" .env || echo "REALITY_SHORT_ID=$SID" >> .env
+    export REALITY_SHORT_ID=$SID
+  fi
+  if [[ -z "${XRAY_UUID:-}" ]]; then
+    UUID=$(cat /proc/sys/kernel/random/uuid)
+    grep -q '^XRAY_UUID=' .env && sed -i "s|^XRAY_UUID=.*$|XRAY_UUID=$UUID|" .env || echo "XRAY_UUID=$UUID" >> .env
+    export XRAY_UUID=$UUID
+  fi
+  DEST=${REALITY_DEST:-www.cloudflare.com:443}
+  SNI=${REALITY_SNI:-www.cloudflare.com}
+  PORT=${XRAY_PORT:-443}
+  cat > data/xray/config.json <<JSON
+{
+  "inbounds": [
+    {
+      "tag": "vless-reality",
+      "port": $PORT,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          { "id": "$XRAY_UUID", "email": "default@local", "flow": "xtls-rprx-vision" }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "dest": "$DEST",
+          "xver": 0,
+          "serverNames": ["$SNI"],
+          "privateKey": "$REALITY_PRIVATE_KEY",
+          "shortIds": ["$REALITY_SHORT_ID"]
+        }
+      },
+      "sniffing": { "enabled": true, "destOverride": ["http", "tls", "quic"] }
+    }
+  ],
+  "outbounds": [ { "protocol": "freedom" } ]
+}
+JSON
+  docker compose restart xray || true
+fi
 
 green "All set. If this is your first run, you may need to re-login for Docker group to take effect."
 green "wg-easy UI: http://$(hostname -I | awk '{print $1}'):51821"
