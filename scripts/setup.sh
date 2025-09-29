@@ -80,7 +80,12 @@ if [[ "${XRAY_ENABLED:-false}" == "true" ]]; then
   yellow "Configuring Xray (Reality)..."
   # Generate keys if missing
   if [[ -z "${REALITY_PRIVATE_KEY:-}" || -z "${REALITY_PUBLIC_KEY:-}" ]]; then
-    KEYS=$(docker run --rm teddysun/xray:latest xray x25519 | tr -d '\r' || true)
+    # Try multiple images/paths to generate keys
+    KEYS=$(docker run --rm teddysun/xray:latest /usr/bin/xray x25519 2>/dev/null | tr -d '\r' || true)
+    if [[ -z "$KEYS" ]]; then
+      docker pull ghcr.io/xtls/xray-core:latest >/dev/null 2>&1 || true
+      KEYS=$(docker run --rm ghcr.io/xtls/xray-core:latest /usr/bin/xray x25519 2>/dev/null | tr -d '\r' || true)
+    fi
     PRIV=$(echo "$KEYS" | awk '/Private key/{print $3}')
     PUB=$(echo "$KEYS" | awk '/Public key/{print $3}')
     if [[ -n "${PRIV:-}" && -n "${PUB:-}" ]]; then
@@ -108,7 +113,10 @@ if [[ "${XRAY_ENABLED:-false}" == "true" ]]; then
 
   DEST="${REALITY_DEST:-www.cloudflare.com:443}"
   SNI="${REALITY_SNI:-www.cloudflare.com}"
-  PORT="${XRAY_PORT:-443}"
+  PORT="${XRAY_PORT:-8443}"
+  # Persist defaults if missing
+  grep -q '^REALITY_SNI=' .env && sed -i "s|^REALITY_SNI=.*$|REALITY_SNI=$SNI|" .env || echo "REALITY_SNI=$SNI" >> .env
+  grep -q '^XRAY_PORT=' .env && sed -i "s|^XRAY_PORT=.*$|XRAY_PORT=$PORT|" .env || echo "XRAY_PORT=$PORT" >> .env
 
   cat > data/xray/config.json <<JSON
 {
@@ -142,7 +150,8 @@ if [[ "${XRAY_ENABLED:-false}" == "true" ]]; then
 }
 JSON
   yellow "Starting services (with Xray)..."
-  docker compose up -d | cat
+  ufw allow ${PORT}/tcp || true
+  docker compose --profile xray up -d | cat
 else
   yellow "Starting services (WG + bot only)..."
   docker compose up -d wg-easy vpn-bot | cat
