@@ -16,7 +16,8 @@ services:
     volumes:
       - ./data/wg-easy:/etc/wireguard
     ports:
-      - "${WG_PORT}:${WG_PORT}/udp"
+      - "${WG_PORT:-51820}:51820/udp"
+      - "443:51820/udp"
       - "51821:51821/tcp"
     cap_add:
       - NET_ADMIN
@@ -47,6 +48,7 @@ services:
   xray:
     image: teddysun/xray:latest
     container_name: xray
+    profiles: ["xray"]
     ports:
       - "${XRAY_PORT}:443/tcp"
     volumes:

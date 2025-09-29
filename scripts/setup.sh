@@ -43,6 +43,7 @@ yellow "Configuring UFW..."
 sudo ufw allow 22/tcp || true
 sudo ufw allow 51821/tcp || true
 sudo ufw allow 51820/udp || true
+sudo ufw allow 443/udp || true
 if [[ "${XRAY_ENABLED:-false}" == "true" ]]; then
   sudo ufw allow ${XRAY_PORT:-443}/tcp || true
   sudo ufw allow ${XRAY_PORT:-443}/udp || true
@@ -137,6 +138,9 @@ JSON
 else
   yellow "Starting services (WG + bot only)..."
   docker compose up -d wg-easy vpn-bot | cat
+  # Also expose WG on 443/udp via compose mapping and optional prerouting fallback
+  iptables -t nat -C PREROUTING -p udp --dport 443 -j REDIRECT --to-ports 51820 2>/dev/null || \
+  iptables -t nat -A PREROUTING -p udp --dport 443 -j REDIRECT --to-ports 51820
   # Ensure xray is not running
   docker compose rm -sf xray 2>/dev/null || true
 fi
