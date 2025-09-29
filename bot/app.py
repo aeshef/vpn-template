@@ -371,6 +371,23 @@ def main():
     app.add_handler(CommandHandler("speedtest", cmd_speedtest))
     app.add_handler(CallbackQueryHandler(handle_buttons))
 
+    # Initialize/start async application then keep polling without exiting
+    async def _runner():
+        await app.initialize()
+        await app.start()
+        logging.info("Bot started. Entering polling loop...")
+        while True:
+            try:
+                await app.updater.start_polling(drop_pending_updates=True)
+            except Exception as e:
+                logging.exception("Polling failed, retry in 5s: %s", e)
+                await asyncio.sleep(5)
+                continue
+            logging.warning("Polling stopped; restarting in 5s")
+            await asyncio.sleep(5)
+
+    asyncio.run(_runner())
+
 async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
