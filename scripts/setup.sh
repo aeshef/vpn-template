@@ -80,28 +80,36 @@ if [[ "${XRAY_ENABLED:-false}" == "true" ]]; then
   yellow "Configuring Xray (Reality)..."
   # Generate keys if missing
   if [[ -z "${REALITY_PRIVATE_KEY:-}" || -z "${REALITY_PUBLIC_KEY:-}" ]]; then
-    KEYS=$(docker run --rm teddysun/xray:latest xray x25519 | tr -d '\r')
+    KEYS=$(docker run --rm teddysun/xray:latest xray x25519 | tr -d '\r' || true)
     PRIV=$(echo "$KEYS" | awk '/Private key/{print $3}')
     PUB=$(echo "$KEYS" | awk '/Public key/{print $3}')
-    if [[ -n "$PRIV" && -n "$PUB" ]]; then
+    if [[ -n "${PRIV:-}" && -n "${PUB:-}" ]]; then
       grep -q '^REALITY_PRIVATE_KEY=' .env && sed -i "s|^REALITY_PRIVATE_KEY=.*$|REALITY_PRIVATE_KEY=$PRIV|" .env || echo "REALITY_PRIVATE_KEY=$PRIV" >> .env
       grep -q '^REALITY_PUBLIC_KEY=' .env && sed -i "s|^REALITY_PUBLIC_KEY=.*$|REALITY_PUBLIC_KEY=$PUB|" .env || echo "REALITY_PUBLIC_KEY=$PUB" >> .env
-      export REALITY_PRIVATE_KEY=$PRIV REALITY_PUBLIC_KEY=$PUB
     fi
   fi
-  if [[ -z "${REALITY_SHORT_ID:-}" ]]; then
-    SID=$(openssl rand -hex 4)
-    grep -q '^REALITY_SHORT_ID=' .env && sed -i "s|^REALITY_SHORT_ID=.*$|REALITY_SHORT_ID=$SID|" .env || echo "REALITY_SHORT_ID=$SID" >> .env
-    export REALITY_SHORT_ID=$SID
+  # Ensure base vars are defined (may be empty strings if generation failed)
+  RPRIV="${REALITY_PRIVATE_KEY:-}"
+  RPUB="${REALITY_PUBLIC_KEY:-}"
+  RSID="${REALITY_SHORT_ID:-}"
+  RUUID="${XRAY_UUID:-}"
+  # Fill missing values
+  if [[ -z "$RSID" ]]; then RSID=$(openssl rand -hex 4); fi
+  if [[ -z "$RUUID" ]]; then RUUID=$(cat /proc/sys/kernel/random/uuid); fi
+  # Persist filled values back to .env
+  grep -q '^REALITY_SHORT_ID=' .env && sed -i "s|^REALITY_SHORT_ID=.*$|REALITY_SHORT_ID=$RSID|" .env || echo "REALITY_SHORT_ID=$RSID" >> .env
+  grep -q '^XRAY_UUID=' .env && sed -i "s|^XRAY_UUID=.*$|XRAY_UUID=$RUUID|" .env || echo "XRAY_UUID=$RUUID" >> .env
+
+  # Validate we have keys; if not, abort with message
+  if [[ -z "$RPRIV" || -z "$RPUB" ]]; then
+    red "Failed to generate Reality keys. Try: docker pull teddysun/xray:latest and rerun setup."
+    exit 1
   fi
-  if [[ -z "${XRAY_UUID:-}" ]]; then
-    UUID=$(cat /proc/sys/kernel/random/uuid)
-    grep -q '^XRAY_UUID=' .env && sed -i "s|^XRAY_UUID=.*$|XRAY_UUID=$UUID|" .env || echo "XRAY_UUID=$UUID" >> .env
-    export XRAY_UUID=$UUID
-  fi
-  DEST=${REALITY_DEST:-www.cloudflare.com:443}
-  SNI=${REALITY_SNI:-www.cloudflare.com}
-  PORT=${XRAY_PORT:-443}
+
+  DEST="${REALITY_DEST:-www.cloudflare.com:443}"
+  SNI="${REALITY_SNI:-www.cloudflare.com}"
+  PORT="${XRAY_PORT:-443}"
+
   cat > data/xray/config.json <<JSON
 {
   "inbounds": [
@@ -111,7 +119,7 @@ if [[ "${XRAY_ENABLED:-false}" == "true" ]]; then
       "protocol": "vless",
       "settings": {
         "clients": [
-          { "id": "$XRAY_UUID", "email": "default@local", "flow": "xtls-rprx-vision" }
+          { "id": "$RUUID", "email": "default@local", "flow": "xtls-rprx-vision" }
         ],
         "decryption": "none"
       },
@@ -123,8 +131,8 @@ if [[ "${XRAY_ENABLED:-false}" == "true" ]]; then
           "dest": "$DEST",
           "xver": 0,
           "serverNames": ["$SNI"],
-          "privateKey": "$REALITY_PRIVATE_KEY",
-          "shortIds": ["$REALITY_SHORT_ID"]
+          "privateKey": "$RPRIV",
+          "shortIds": ["$RSID"]
         }
       },
       "sniffing": { "enabled": true, "destOverride": ["http", "tls", "quic"] }
