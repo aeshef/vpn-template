@@ -385,8 +385,18 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "speedtest":
         return await cmd_speedtest(update, context)
 
-    # Run polling (blocks until termination)
-    app.run_polling(drop_pending_updates=True)
+    # Run polling with auto-retry to avoid exiting the container silently
+    logging.info("Starting Telegram bot polling...")
+    while True:
+        try:
+            app.run_polling(drop_pending_updates=True)
+        except Exception as e:
+            logging.exception("Bot polling crashed, retrying in 5s: %s", e)
+            time.sleep(5)
+            continue
+        # If run_polling returns normally, sleep and restart to prevent container exit
+        logging.warning("run_polling returned; restarting in 5s to keep container alive")
+        time.sleep(5)
 
 
 if __name__ == "__main__":
