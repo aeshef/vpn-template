@@ -37,6 +37,28 @@ logging.basicConfig(
 )
 
 
+async def reply_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    chat_id = update.effective_chat.id if update.effective_chat else None
+    if chat_id is None:
+        return
+    await context.bot.send_message(chat_id=chat_id, text=text)
+
+
+async def reply_html(update: Update, context: ContextTypes.DEFAULT_TYPE, html: str):
+    chat_id = update.effective_chat.id if update.effective_chat else None
+    if chat_id is None:
+        return
+    await context.bot.send_message(chat_id=chat_id, text=html, parse_mode="HTML", disable_web_page_preview=True)
+
+
+async def reply_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, filepath: str, filename: str = "image.png"):
+    chat_id = update.effective_chat.id if update.effective_chat else None
+    if chat_id is None:
+        return
+    with open(filepath, 'rb') as f:
+        await context.bot.send_photo(chat_id=chat_id, photo=f)
+
+
 async def init_db():
     os.makedirs(DATA_DIR, exist_ok=True)
     async with aiosqlite.connect(DB_PATH) as db:
@@ -188,7 +210,11 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📊 Статус", callback_data="status"), InlineKeyboardButton("👥 Пиры", callback_data="peers")],
         [InlineKeyboardButton("📈 График", callback_data="graph_3"), InlineKeyboardButton("⚡ Speedtest", callback_data="speedtest")],
     ]
-    await update.message.reply_text("Выберите действие:", reply_markup=InlineKeyboardMarkup(kb))
+    # Works for both message and callback contexts
+    if update.message:
+        await update.message.reply_text("Выберите действие:", reply_markup=InlineKeyboardMarkup(kb))
+    else:
+        await reply_text(update, context, "Выберите действие:")
 
 
 @guard
@@ -212,7 +238,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"UPTIME: {datetime.now() - boot} (since {boot.strftime('%Y-%m-%d %H:%M:%S')})",
         f"HOST: {socket.gethostname()}"
     ]
-    await update.message.reply_text("\n".join(lines))
+    await reply_text(update, context, "\n".join(lines))
 
 
 def run_host_cmd(cmd: list[str], timeout: int = 10) -> tuple[int, str, str]:
@@ -228,9 +254,9 @@ async def cmd_peers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Query WireGuard peers from wg-easy container
     code, out, err = run_host_cmd(["/usr/bin/env", "bash", "-lc", f"docker exec {WG_CONTAINER} wg show"], timeout=20)
     if code != 0 or not out.strip():
-        await update.message.reply_text(("Failed to fetch peers: " + (err or out))[:1000])
+        await reply_text(update, context, ("Failed to fetch peers: " + (err or out))[:1000])
         return
-    await update.message.reply_text("<pre>" + out + "</pre>", parse_mode="HTML")
+    await reply_html(update, context, "<pre>" + out + "</pre>")
 
 
 @guard
@@ -249,7 +275,7 @@ async def cmd_graph(update: Update, context: ContextTypes.DEFAULT_TYPE):
             rows = await cur.fetchall()
 
     if not rows:
-        await update.message.reply_text("Нет данных для графика")
+        await reply_text(update, context, "Нет данных для графика")
         return
 
     # Build simple matplotlib PNG
@@ -285,8 +311,7 @@ async def cmd_graph(update: Update, context: ContextTypes.DEFAULT_TYPE):
     fig.savefig(out_path)
     plt.close(fig)
 
-    with open(out_path, 'rb') as f:
-        await update.message.reply_photo(InputFile(f, filename="graph.png"))
+    await reply_photo(update, context, out_path, filename="graph.png")
 
 
 @guard
@@ -297,7 +322,7 @@ async def cmd_speedtest(update: Update, context: ContextTypes.DEFAULT_TYPE):
         args.extend(["--server", server_id])
     code, out, err = run_host_cmd(args, timeout=60)
     if code != 0:
-        await update.message.reply_text(f"⚠️ speedtest failed: {(err or out)[:900]}")
+        await reply_text(update, context, f"⚠️ speedtest failed: {(err or out)[:900]}")
         return
     # Parse simple output
     dl = up = ping = None
@@ -334,7 +359,7 @@ async def cmd_speedtest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif up and up < 5:
         msg.append("⚠️ Низкая скорость отдачи!")
     msg.append(f"\nВремя теста: {now}")
-    await update.message.reply_text("\n".join(msg))
+    await reply_text(update, context, "\n".join(msg))
 
 
 async def scheduler_job():
