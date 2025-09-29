@@ -72,11 +72,9 @@ if [[ -z "${WG_EASY_PASSWORD_HASH:-}" && -n "${WG_EASY_PASSWORD:-}" ]]; then
   fi
 fi
 
-yellow "Starting services with Docker Compose..."
+yellow "Preparing services..."
 docker compose pull | cat || true
-docker compose up -d | cat
 
-# Configure Xray (Reality) if enabled
 if [[ "${XRAY_ENABLED:-false}" == "true" ]]; then
   yellow "Configuring Xray (Reality)..."
   # Generate keys if missing
@@ -134,7 +132,13 @@ if [[ "${XRAY_ENABLED:-false}" == "true" ]]; then
   "outbounds": [ { "protocol": "freedom" } ]
 }
 JSON
-  docker compose restart xray || true
+  yellow "Starting services (with Xray)..."
+  docker compose up -d | cat
+else
+  yellow "Starting services (WG + bot only)..."
+  docker compose up -d wg-easy vpn-bot | cat
+  # Ensure xray is not running
+  docker compose rm -sf xray 2>/dev/null || true
 fi
 
 green "All set. If this is your first run, you may need to re-login for Docker group to take effect."
