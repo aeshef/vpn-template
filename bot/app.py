@@ -8,6 +8,7 @@ import logging
 import aiosqlite
 import subprocess
 from datetime import datetime, timedelta
+import uuid as uuidlib
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -79,6 +80,22 @@ async def init_db():
             CREATE TABLE IF NOT EXISTS kv (
                 k TEXT PRIMARY KEY,
                 v TEXT NOT NULL
+            )
+            """
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind TEXT NOT NULL,            -- 'xray'
+                user_id INTEGER NOT NULL,
+                username TEXT,
+                status TEXT NOT NULL,          -- 'pending' | 'approved' | 'rejected'
+                created_ts INTEGER NOT NULL,
+                approved_ts INTEGER,
+                approver_chat_id INTEGER,
+                client_uuid TEXT,
+                note TEXT
             )
             """
         )
@@ -209,6 +226,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = [
         [InlineKeyboardButton("📊 Статус", callback_data="status"), InlineKeyboardButton("👥 Пиры", callback_data="peers")],
         [InlineKeyboardButton("📈 График", callback_data="graph_3"), InlineKeyboardButton("⚡ Speedtest", callback_data="speedtest")],
+        [InlineKeyboardButton("🔑 Запросить Xray", callback_data="request_xray")],
     ]
     # Works for both message and callback contexts
     if update.message:
@@ -244,6 +262,14 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def run_host_cmd(cmd: list[str], timeout: int = 10) -> tuple[int, str, str]:
     try:
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, text=True)
+        return proc.returncode, proc.stdout, proc.stderr
+    except Exception as e:
+        return 1, "", str(e)
+
+
+def run_host_cmd_input(cmd: list[str], input_text: str, timeout: int = 10) -> tuple[int, str, str]:
+    try:
+        proc = subprocess.run(cmd, input=input_text, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, text=True)
         return proc.returncode, proc.stdout, proc.stderr
     except Exception as e:
         return 1, "", str(e)
@@ -362,6 +388,177 @@ async def cmd_speedtest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply_text(update, context, "\n".join(msg))
 
 
+# ----------------------- XRAY ISSUE FLOW -----------------------
+
+def is_xray_enabled() -> bool:
+    return os.getenv("XRAY_ENABLED", "false").lower() == "true"
+
+
+def _read_xray_config() -> dict | None:
+    code, out, err = run_host_cmd(["/usr/bin/env", "bash", "-lc", "docker exec xray sh -c 'cat /etc/xray/config.json'"], timeout=20)
+    if code != 0 or not out.strip():
+        logging.warning("Failed to read xray config: %s", err or out)
+        return None
+    try:
+        return json.loads(out)
+    except Exception as e:
+        logging.exception("Invalid xray config json: %s", e)
+        return None
+
+
+def _write_xray_config(cfg: dict) -> bool:
+    try:
+        tmp_path = os.path.join(DATA_DIR, "tmp_xray_config.json")
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logging.exception("Failed to write tmp xray config: %s", e)
+        return False
+    code, out, err = run_host_cmd(["/usr/bin/env", "bash", "-lc", f"docker cp {tmp_path} xray:/etc/xray/config.json"], timeout=20)
+    if code != 0:
+        logging.warning("docker cp failed: %s", err or out)
+        return False
+    code, out, err = run_host_cmd(["/usr/bin/env", "bash", "-lc", "docker restart xray"], timeout=60)
+    if code != 0:
+        logging.warning("docker restart xray failed: %s", err or out)
+        return False
+    return True
+
+
+def _generate_vless_url(client_uuid: str, label: str) -> str:
+    host = os.getenv("WG_HOST", "")
+    port = os.getenv("XRAY_PORT", "443")
+    sni = os.getenv("REALITY_SNI", "")
+    sid = os.getenv("REALITY_SHORT_ID", "")
+    pub = os.getenv("REALITY_PUBLIC_KEY", "")
+    query = f"type=tcp&security=reality&pbk={pub}&sid={sid}&sni={sni}&flow=xtls-rprx-vision"
+    return f"vless://{client_uuid}@{host}:{port}?{query}#{label}"
+
+
+async def _notify_admin_new_request(app_handle: Application, req_id: int, user_id: int, username: str | None):
+    chat_id = await get_allowed_chat_id()
+    if not chat_id:
+        return
+    uname = username or "unknown"
+    kb = [[
+        InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_xray_{req_id}"),
+        InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_xray_{req_id}")
+    ]]
+    text = f"Новый запрос Xray\nuser_id: {user_id}\nusername: {uname}\nrequest_id: {req_id}"
+    try:
+        await app_handle.bot.send_message(chat_id=chat_id, text=text, reply_markup=InlineKeyboardMarkup(kb))
+    except Exception:
+        pass
+
+
+async def _create_or_update_request(user_id: int, username: str | None) -> int:
+    now = int(time.time())
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO requests(kind, user_id, username, status, created_ts) VALUES(?,?,?,?,?)",
+            ("xray", user_id, username, "pending", now),
+        )
+        await db.commit()
+        cur = await db.execute("SELECT last_insert_rowid()")
+        row = await cur.fetchone()
+        return int(row[0])
+
+
+async def _approve_request(req_id: int, approver_chat_id: int) -> tuple[bool, str]:
+    # Load request
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT id, user_id, username, status FROM requests WHERE id=?", (req_id,)) as cur:
+            row = await cur.fetchone()
+    if not row:
+        return False, "Заявка не найдена"
+    _, user_id, username, status = row
+    if status != "pending":
+        return False, "Заявка уже обработана"
+
+    if not is_xray_enabled():
+        return False, "XRAY_DISABLED"
+
+    cfg = _read_xray_config()
+    if not cfg:
+        return False, "Не удалось прочитать конфиг Xray"
+
+    # Find inbound with clients
+    inbounds = cfg.get("inbounds", [])
+    inbound = None
+    for ib in inbounds:
+        if ib.get("tag") == "vless-reality":
+            inbound = ib
+            break
+    if inbound is None and inbounds:
+        inbound = inbounds[0]
+    if inbound is None:
+        return False, "Некорректный конфиг Xray (нет inbounds)"
+
+    settings = inbound.setdefault("settings", {})
+    clients = settings.setdefault("clients", [])
+
+    new_uuid = str(uuidlib.uuid4())
+    email = f"tg_{user_id}@local"
+    clients.append({
+        "id": new_uuid,
+        "email": email,
+        "flow": "xtls-rprx-vision"
+    })
+
+    if not _write_xray_config(cfg):
+        return False, "Не удалось сохранить/перезапустить Xray"
+
+    # Persist approval
+    now = int(time.time())
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE requests SET status='approved', approved_ts=?, approver_chat_id=?, client_uuid=? WHERE id=?",
+            (now, approver_chat_id, new_uuid, req_id),
+        )
+        await db.commit()
+
+    # Send link to user
+    label = (username or "xray").replace(" ", "_")
+    url = _generate_vless_url(new_uuid, label)
+    try:
+        await app.bot.send_message(chat_id=user_id, text=f"Ваш доступ одобрен.\n{url}")
+    except Exception:
+        pass
+    return True, "Одобрено"
+
+
+async def _reject_request(req_id: int, approver_chat_id: int) -> tuple[bool, str]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT id, status FROM requests WHERE id=?", (req_id,)) as cur:
+            row = await cur.fetchone()
+    if not row:
+        return False, "Заявка не найдена"
+    _, status = row
+    if status != "pending":
+        return False, "Заявка уже обработана"
+    now = int(time.time())
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE requests SET status='rejected', approved_ts=?, approver_chat_id=? WHERE id=?",
+            (now, approver_chat_id, req_id),
+        )
+        await db.commit()
+    return True, "Отклонено"
+
+
+async def cmd_request_xray(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Allow any user to request
+    if not is_xray_enabled():
+        await reply_text(update, context, "Сервис Xray отключён на сервере")
+        return
+    user = update.effective_user
+    if not user:
+        return
+    req_id = await _create_or_update_request(user.id, user.username)
+    await reply_text(update, context, "Запрос отправлен. Ожидайте подтверждения админа.")
+    await _notify_admin_new_request(app, req_id, user.id, user.username)
+
+
 async def scheduler_job():
     try:
         await sample_metrics()
@@ -394,6 +591,7 @@ def main():
     app.add_handler(CommandHandler("peers", cmd_peers))
     app.add_handler(CommandHandler("graph", cmd_graph))
     app.add_handler(CommandHandler("speedtest", cmd_speedtest))
+    app.add_handler(CommandHandler("request_xray", cmd_request_xray))
     app.add_handler(CallbackQueryHandler(handle_buttons))
 
     # Single blocking polling; container entrypoint restarts process if needed
@@ -429,6 +627,24 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await cmd_graph(update, context)
     if data == "speedtest":
         return await cmd_speedtest(update, context)
+    if data == "request_xray":
+        return await cmd_request_xray(update, context)
+    if data.startswith("approve_xray_"):
+        try:
+            req_id = int(data.split("_")[-1])
+        except Exception:
+            return
+        ok, msg = await _approve_request(req_id, update.effective_chat.id)
+        await reply_text(update, context, msg)
+        return
+    if data.startswith("reject_xray_"):
+        try:
+            req_id = int(data.split("_")[-1])
+        except Exception:
+            return
+        ok, msg = await _reject_request(req_id, update.effective_chat.id)
+        await reply_text(update, context, msg)
+        return
 
     # (removed module-level polling loop)
 

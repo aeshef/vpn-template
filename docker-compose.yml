@@ -50,7 +50,7 @@ services:
     container_name: xray
     profiles: ["xray"]
     ports:
-      - "${XRAY_PORT}:443/tcp"
+      - "${XRAY_PORT:-443}:${XRAY_PORT:-443}/tcp"
     volumes:
       - ./data/xray:/etc/xray
     environment:

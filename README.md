@@ -27,6 +27,17 @@ sudo bash scripts/setup.sh
 
 3) В Telegram напишите боту `/start`. Бот запомнит ваш chat_id (или укажите `TELEGRAM_ALLOWED_CHAT_ID` в `.env`).
 
+### Xray VLESS-Reality (опционально)
+
+- В `.env` установите `XRAY_ENABLED=true`. Скрипт `scripts/setup.sh` при первом запуске сгенерирует ключи Reality, UUID и конфиг `data/xray/config.json`.
+- После запуска выполните:
+
+```
+bash scripts/print_vless.sh
+```
+
+Команда выведет готовую ссылку формата VLESS Reality, которую можно импортировать в поддерживаемые клиенты (например, v2rayNG, Nekoray и т.д.). Параметры: flow `xtls-rprx-vision`, TCP + Reality.
+
 ### Что разворачивается
 
 - `wg-easy` — удобный WireGuard-сервер с UI, совместим с Amnezia-клиентом (можно импортировать WG-конфиги в Amnezia).
