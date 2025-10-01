@@ -43,7 +43,10 @@ yellow "Configuring UFW..."
 sudo ufw allow 22/tcp || true
 sudo ufw allow 51821/tcp || true
 sudo ufw allow 51820/udp || true
-sudo ufw allow 443/udp || true
+# Open default UDP 443 for AmneziaWG when enabled
+if [[ "${AWG_ENABLED:-false}" == "true" ]]; then
+  sudo ufw allow ${AWG_PORT:-443}/udp || true
+fi
 if [[ "${XRAY_ENABLED:-false}" == "true" ]]; then
   sudo ufw allow ${XRAY_PORT:-443}/tcp || true
   sudo ufw allow ${XRAY_PORT:-443}/udp || true
@@ -153,12 +156,17 @@ JSON
   ufw allow ${PORT}/tcp || true
   docker compose --profile xray up -d | cat
 else
-  yellow "Starting services (WG + bot only)..."
-  docker compose up -d wg-easy vpn-bot | cat
-  # Also expose WG on 443/udp via compose mapping and optional prerouting fallback
-  iptables -t nat -C PREROUTING -p udp --dport 443 -j REDIRECT --to-ports 51820 2>/dev/null || \
-  iptables -t nat -A PREROUTING -p udp --dport 443 -j REDIRECT --to-ports 51820
-  # Ensure xray is not running
+  if [[ "${AWG_ENABLED:-false}" == "true" ]]; then
+    yellow "Starting services (Bot only; AmneziaWG managed externally)..."
+    # Do not start wg-easy when AWG is enabled. Assume AWG is installed via its own installer or container.
+    docker compose up -d vpn-bot | cat
+  else
+    yellow "Starting services (WG + bot only)..."
+    docker compose up -d wg-easy vpn-bot | cat
+    # Do not redirect UDP 443 to 51820 anymore; AWG may use 443/udp directly
+    iptables -t nat -D PREROUTING -p udp --dport 443 -j REDIRECT --to-ports 51820 2>/dev/null || true
+  fi
+  # Ensure xray is not running if disabled
   docker compose rm -sf xray 2>/dev/null || true
 fi
 

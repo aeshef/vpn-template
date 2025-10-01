@@ -29,6 +29,8 @@ ALERT_MEM_PCT = float(os.getenv("ALERT_MEM_PCT", "85"))
 ALERT_NET_MBPS = float(os.getenv("ALERT_NET_MBPS", "200"))
 ALERT_COOLDOWN_MIN = int(os.getenv("ALERT_COOLDOWN_MIN", "10"))
 WG_CONTAINER = os.getenv("WG_CONTAINER", "wg-easy")
+AWG_ENABLED = os.getenv("AWG_ENABLED", "false").lower() == "true"
+AWG_CONTAINER = os.getenv("AWG_CONTAINER", "amneziawg")
 
 LAST_ALERT_TS = 0.0
 
@@ -277,8 +279,14 @@ def run_host_cmd_input(cmd: list[str], input_text: str, timeout: int = 10) -> tu
 
 @guard
 async def cmd_peers(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Query WireGuard peers from wg-easy container
-    code, out, err = run_host_cmd(["/usr/bin/env", "bash", "-lc", f"docker exec {WG_CONTAINER} wg show"], timeout=20)
+    # Query peers from AWG or wg-easy container
+    if AWG_ENABLED:
+        code, out, err = run_host_cmd(["/usr/bin/env", "bash", "-lc", f"docker exec {AWG_CONTAINER} wg show"], timeout=20)
+        # Fallback to host wg if container missing
+        if code != 0 or not out.strip():
+            code, out, err = run_host_cmd(["/usr/bin/env", "bash", "-lc", "wg show"], timeout=20)
+    else:
+        code, out, err = run_host_cmd(["/usr/bin/env", "bash", "-lc", f"docker exec {WG_CONTAINER} wg show"], timeout=20)
     if code != 0 or not out.strip():
         await reply_text(update, context, ("Failed to fetch peers: " + (err or out))[:1000])
         return

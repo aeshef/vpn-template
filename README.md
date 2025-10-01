@@ -1,6 +1,6 @@
-### VPN Template (Ubuntu 22.04) — Amnezia-compatible WireGuard server + Telegram мониторинг
+### VPN Template (Ubuntu 22.04) — AmneziaWG/WireGuard + Xray + Telegram мониторинг
 
-Этот репозиторий-шаблон позволяет быстро поднять VPN-сервер (WireGuard, совместим с Amnezia-клиентом) и Telegram-бота для мониторинга: статус, активные подключения, графики нагрузки (CPU/MEM/NET), алерты по порогам, speedtest.
+Этот репозиторий-шаблон позволяет быстро поднять VPN-сервер (AmneziaWG или стандартный WireGuard через wg-easy) и Telegram-бота для мониторинга: статус, активные подключения, графики нагрузки (CPU/MEM/NET), алерты, speedtest. Дополнительно можно включить Xray (VLESS Reality) на 443/tcp.
 
 ### Быстрый старт
 
@@ -13,6 +13,9 @@ vi .env
 
 Обязательные переменные: публичный IP сервера (`WG_HOST`), токен Telegram-бота (`TELEGRAM_BOT_TOKEN`).
 
+- Если используете AmneziaWG: выставьте `AWG_ENABLED=true`. При необходимости измените `AWG_PORT` (по умолчанию 443/udp) и параметры джиттера (`AWG_JC`, `AWG_JMIN`, `AWG_JMAX`, `AWG_S1`, `AWG_S2`).
+- Если используете стандартный WireGuard: оставьте `AWG_ENABLED=false`, настройте `WG_*` и UI пароль для `wg-easy`.
+
 2) Выполните установку (Ubuntu 22.04):
 
 ```
@@ -21,54 +24,54 @@ sudo bash scripts/setup.sh
 
 Скрипт:
 - установит Docker и зависимости;
-- применит sysctl и UFW (откроет 22/tcp, 51820/udp, 51821/tcp (UI wg-easy));
-- сгенерирует bcrypt-хэш пароля UI для `wg-easy` (если задан `WG_EASY_PASSWORD`);
-- поднимет `docker compose up -d`.
+- применит sysctl и UFW (откроет 22/tcp, 51820/udp, 51821/tcp; если `AWG_ENABLED=true` — откроет `AWG_PORT`/udp);
+- подготовит Xray-конфиг (если `XRAY_ENABLED=true`) и поднимет сервисы.
 
 3) В Telegram напишите боту `/start`. Бот запомнит ваш chat_id (или укажите `TELEGRAM_ALLOWED_CHAT_ID` в `.env`).
 
+### AmneziaWG (AWG)
+
+- Этот шаблон не запускает сам AWG-контейнер, а оставляет его установку гибкой (вне compose). Включите `AWG_ENABLED=true`, скрипт не будет стартовать `wg-easy` и не будет делать редирект 443→51820/udp.
+- Откройте в фаерволе `AWG_PORT` (делает `setup.sh`).
+- Бот команда `/peers` поддерживает AWG: если `AWG_ENABLED=true`, сначала пытается `docker exec $AWG_CONTAINER wg show`, затем fallback на `wg show` в хосте.
+
+Рекомендованные параметры (если соединение нестабильно):
+- Jc от 3 до 5; Jmin=40; Jmax=70; при необходимости S1/S2 от 2 до 10.
+
 ### Xray VLESS-Reality (опционально)
 
-- В `.env` установите `XRAY_ENABLED=true`. Скрипт `scripts/setup.sh` при первом запуске сгенерирует ключи Reality, UUID и конфиг `data/xray/config.json`.
-- После запуска выполните:
+- В `.env` установите `XRAY_ENABLED=true`. `scripts/setup.sh` сгенерирует ключи Reality, UUID и конфиг `data/xray/config.json` (TCP + Reality, flow `xtls-rprx-vision`).
+- После запуска выведите ссылку:
 
 ```
 bash scripts/print_vless.sh
 ```
 
-Команда выведет готовую ссылку формата VLESS Reality, которую можно импортировать в поддерживаемые клиенты (например, v2rayNG, Nekoray и т.д.). Параметры: flow `xtls-rprx-vision`, TCP + Reality.
-
 ### Что разворачивается
 
-- `wg-easy` — удобный WireGuard-сервер с UI, совместим с Amnezia-клиентом (можно импортировать WG-конфиги в Amnezia).
-- `vpn-bot` — Telegram-бот с фоновым сбором метрик в SQLite и командами:
-  - `/status` — текущее CPU/MEM/NET, диски, аптайм;
-  - `/peers` — активные WG-пиры (по последнему рукопожатию);
-  - `/graph [часы]` — PNG-график за последние N часов (по умолчанию 3);
-  - `/speedtest` — тест скорости с сервера;
-  - `/help` — справка.
+- `wg-easy` — если `AWG_ENABLED=false` (WG + UI);
+- `vpn-bot` — Telegram-бот: `/status`, `/peers`, `/graph [часы]`, `/speedtest`, `/help` и заявка на Xray;
+- `xray` — при `XRAY_ENABLED=true` (VLESS Reality на `XRAY_PORT`).
 
-Алерты: при превышении порогов CPU/MEM/NET бот отправляет уведомления (с тайм-аутом `ALERT_COOLDOWN_MIN`).
-
-Где хранится:
+Данные:
 - конфиги WireGuard: `./data/wg-easy`
+- конфиг Xray: `./data/xray/config.json`
 - база метрик SQLite: `./data/bot/metrics.sqlite`
 
 ### Переменные окружения (.env)
 
 См. `.env.example` для полного списка. Ключевые:
 - `WG_HOST` — публичный IP/домен сервера
-- `WG_PORT` — порт WireGuard (UDP), по умолчанию 51820
-- `WG_EASY_PASSWORD` — простой пароль для UI; хэш будет сгенерирован в `WG_EASY_PASSWORD_HASH`
-- `TELEGRAM_BOT_TOKEN` — токен вашего Telegram-бота
-- `TELEGRAM_ALLOWED_CHAT_ID` — (опционально) разрешённый chat_id; иначе первый `/start` сохранит его
-
-Пороги алертов и интервалы можно настроить через переменные `ALERT_*` и `METRICS_INTERVAL_SEC`.
+- `AWG_ENABLED` — включить режим AmneziaWG (по умолчанию false)
+- `AWG_PORT` — порт UDP для AWG (по умолчанию 443)
+- `AWG_JC`, `AWG_JMIN`, `AWG_JMAX`, `AWG_S1`, `AWG_S2` — параметры джиттера
+- `XRAY_ENABLED`, `XRAY_PORT`, `REALITY_*`, `XRAY_UUID` — параметры Xray (Reality)
+- `TELEGRAM_BOT_TOKEN` — токен бота; `TELEGRAM_ALLOWED_CHAT_ID` — (опционально) разрешённый chat_id
 
 ### Команды управления
 
 ```
-./scripts/run.sh up       # поднять сервисы
+./scripts/run.sh up       # поднять сервисы (wg-easy+bot или только bot при AWG)
 ./scripts/run.sh down     # остановить
 ./scripts/run.sh restart  # перезапуск
 ./scripts/run.sh logs     # логи бота
@@ -81,33 +84,10 @@ git pull
 ./scripts/run.sh pull && ./scripts/run.sh up
 ```
 
-### Публикация в GitHub (локально на сервере)
+### Примечания по безопасности
 
-Замените `REPO_URL` на свой (например, `https://github.com/aeshef/vpn-template.git`) и запустите:
-
-```
-bash scripts/publish_github.sh "https://github.com/aeshef/vpn-template.git"
-```
-
-Или вручную:
-
-```
-git init
-git add .
-git commit -m "Initial commit"
-git branch -M main
-git remote add origin <REPO_URL>
-git push -u origin main
-```
-
-### Примечания по Amnezia
-
-Amnezia-клиент поддерживает импорт стандартных WireGuard-конфигов. Сгенерируйте peer в UI `wg-easy` или через CLI и импортируйте в Amnezia.
-
-### Безопасность
-
-- Обязательно установите сильный `WG_EASY_PASSWORD` (UI) — хэш генерируется автоматически.
-- Ограничьте доступ к боту через `TELEGRAM_ALLOWED_CHAT_ID`.
-- Храните `.env` вне публичного репозитория.
+- Установите сильный `WG_EASY_PASSWORD` (если используете UI);
+- Ограничьте доступ к боту `TELEGRAM_ALLOWED_CHAT_ID`;
+- Держите `.env` приватным.
 
 

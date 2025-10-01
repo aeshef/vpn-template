@@ -17,7 +17,6 @@ services:
       - ./data/wg-easy:/etc/wireguard
     ports:
       - "${WG_PORT:-51820}:51820/udp"
-      - "443:51820/udp"
       - "51821:51821/tcp"
     cap_add:
       - NET_ADMIN
@@ -41,8 +40,7 @@ services:
     volumes:
       - ./data/bot:/app/data
       - /var/run/docker.sock:/var/run/docker.sock
-    depends_on:
-      - wg-easy
+    # Do not hard depend on wg-easy to allow running without it (e.g., with AmneziaWG)
     restart: unless-stopped
 
   xray:
